@@ -1,0 +1,488 @@
+---
+title: 'Fit propensity project: Compare correlation matrices from different generating methods'
+author: "Joseph DeWeese, Robert Chapman, & Niels Waller"
+date: '2023-03-14'
+output: html_document
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, snapshot = TRUE)
+rgl::setupKnitr(autoprint = TRUE, rgl.newwindow = FALSE, rgl.closewindows = FALSE)
+```
+
+# Background
+**Goal:** Exploratory comparison of the correlation matrices of different data generating methods.
+
+Uses code from Bonifay & Cai (2017) and from Niels Waller. 
+
+Methods:
+
+1) elliptical tetrahedron
+2) random noise R matrices
+4) uniformly sampled random R matrices
+4) tetrachoric correlation of Bonifay & Cai data generation
+5) tetrachoric correlation of Niels Waller data generation
+(dichotomized data from uniformly sampled R matrices)
+
+NOTE: could also do 4) and 5) with pearson correlations (phi coefficient), but
+would expect attenuated correlations
+
+```{r}
+
+# packages
+library(rgl)
+library(fungible)
+library(clusterGeneration)
+library(MASS)
+
+# globals
+reps <- 1e3
+set.seed(27304)
+```
+
+
+# 1. elliptical tetrahedron 
+```{r}
+
+# code from Niels Waller
+
+# Define functions to generate points on the surface of
+# an elliptical tetrahedron
+r1 <- r2<-seq(-1,1,by=.01)
+f1<-function(r1,r2){
+  sqrt ((1-r1^2) * (1-r2^2)) + r1*r2
+}
+
+f2<-function(r1,r2){
+  -sqrt ((1-r1^2) * (1-r2^2)) + r1*r2
+}
+
+
+# Plot the elliptical tetrahedron
+# just use static rgl plots, dynamic versions too slow
+
+# View the elliptope from a nice perspective
+zoom<-1
+#userMatrix<-par3d()$userMatrix
+#windowRect<-par3d()$windowRect
+userMatrix <- matrix(c(
+  0.8154715,  0.5787458, -0.007708319,    0,
+  -0.1117193,  0.1704556,  0.979011655,    0,
+  0.5679128, -0.7974948,  0.203658789,    0,
+  0.0000000,  0.0000000,  0.000000000,    1),4, 4, byrow=TRUE)
+
+windowRect <- c( 0,  45, 836, 617)
+open3d(zoom = zoom, userMatrix = userMatrix, windowRect=windowRect)
+par3d(cex=1.4)
+material3d(col="wheat", alpha = .4)
+
+persp3d(r1,r2,outer(r1,r2,f1), 
+        col="wheat", alpha = .2,
+        xlim=c(-1,1), ylim=c(-1,1), zlim=c(-1,1),
+        xlab="rXY", ylab="rXZ", zlab="rYZ")
+persp3d(r1,r2,outer(r1,r2,f2), col="wheat", alpha = .4, add=TRUE)
+
+
+```
+
+# 2. random noise R matrix
+```{r}
+# code from Niels Waller
+
+# n = sample size
+# we want to generate random R matrices from a population I matrix
+
+# JND: reduced Nsamples from 5e5 to 5e3; rgl plot is slow with too many points
+  # to save time, and still works as a demo
+Nsamples <- 5E3   # generate R from random data
+# save upper triangle of 3 x 3 R matrix
+r12r13r23 <- matrix(0, nrow = Nsamples, ncol = 3)
+
+for( i in 1:Nsamples){
+  R <- fungible::corSample(R = diag(3), n = 1000)$cor.sample
+  r12r13r23[i, ] <- R[upper.tri(R, diag=FALSE)]
+}
+
+# ball of points may be slow to load
+points3d(r12r13r23[,1],
+       r12r13r23[,2],
+       r12r13r23[,3],
+       col="black", alpha = .2, size = 5,
+       xlim=c(-1,1), ylim=c(-1,1), zlim=c(-1,1),
+       xlab="rXY", ylab="rXZ", zlab="rYZ")
+```
+
+# 3. uniformly sampled random R matrix
+```{r}
+
+# 3a. data generation code from Niels Waller  ####
+gen_ranR <- function(nVar){
+  R <- clusterGeneration::genPositiveDefMat(
+    dim = nVar, 
+    covMethod = "unifcorrmat", 
+    alphad = 1,# alpha = 1 for uniform sampling
+    rangeVar = c(1,1)
+  )$Sigma
+  
+  return(R)
+}
+
+# 3b. generate a bunch of correlation matrices ####
+
+unif.cors <- replicate(reps, gen_ranR(3), simplify = FALSE)
+
+# extract values in upper triangle, store in a matrix
+unif.tri <- sapply(unif.cors, function(x) x[upper.tri(x)])
+
+# add to plot
+# appears to uniformly fill the space of the elliptical tetrahedron
+points3d(unif.tri[1,],
+       unif.tri[2,],
+       unif.tri[3,],
+       col="green2", alpha = .6, size = 5,
+       xlim=c(-1,1), ylim=c(-1,1), zlim=c(-1,1),
+       xlab="rXY", ylab="rXZ", zlab="rYZ")
+
+```
+
+# 4. Bonifay & Cai random data
+```{r}
+
+# 4a. data generation code from Bonifay & Cai and Niels Waller  ####
+# minor updates by JND
+gen_BC_data <- function(nitems){
+  
+  # This section is the original data generation code from the appendix of ####
+  # Bonifay & Cai (2017)
+  
+  # Number of items
+  # JND: specify as function argument instead of B&C's 7 items
+  # nitems <- 7 
+  
+  # Generate 2^7 = 128 binary response patterns
+  x <- list(0:1)
+  pattern <- expand.grid(rep(x,nitems))
+  
+  # A large number
+  M <- 10^6
+  
+  # Sample 2^nitems-1 integers 
+  p <- sample.int(M,size=(2^nitems-1))
+  
+  # Sort in place
+  p <- sort(p) 
+  
+  # Append the ends
+  p <- c(0,p,M) 
+  
+  # Lag-1 difference
+  p <- diff(p) 
+  
+  # The desired simplex
+  p <- p/M 
+  
+  # The “sample” size 
+  # N = 10,000 to give the response patterns realistic frequencies
+  p <- p*10000 
+  
+  # The weighted response pattern data
+  data <- cbind(pattern,p)
+  
+  # This section was added by Niels Waller ####
+  # to converted the weighted response patter data 
+  # into an actual dataset of binary responses
+  
+  #NW pattern2raw
+  # We want to create a raw data matrix from the response frequencies
+  pattern2raw <- function(pattern,freq){
+    npattern <- nrow(pattern)
+    nitem <- ncol(pattern)
+    alldata <- matrix(0, nrow=sum(freq), ncol=nitem)
+    rowbegin <- 0
+    rowend <- 0
+    for(i in 1:npattern){
+      alldata[(rowbegin+1):(rowend+freq[i]), ]<-matrix(pattern[i,],
+                                                       nrow=freq[i],
+                                                       ncol=nitem,
+                                                       byrow=TRUE)
+      
+      rowbegin <- rowbegin+freq[i]
+      rowend <- rowend+freq[i]
+    }   
+    return(alldata)
+  }
+  
+  # JND: update from hard-coded for B&C's 7 items to allow to vary
+  m  <- nitems+1
+  data[,m] <- round(data[,m])
+  data <- data[data[,m] > 0, ]
+  X <- pattern2raw( pattern = as.matrix(data[ , -m]),
+                    freq = data[, m])
+  
+  return(X)
+}
+
+
+# 4b. generate a bunch of correlation matrices ####
+
+# generate raw data
+bc.dat <- replicate(reps, gen_BC_data(3), simplify = FALSE) 
+
+# get tetrachoric correlations
+bc.cors <- lapply(bc.dat, function(x) fungible::tetcor(x, PRINT = FALSE)$r)
+
+# extract values in upper triangle, store in a matrix
+bc.tri <- sapply(bc.cors, function(x) x[upper.tri(x)])
+
+# add to plot 
+# appears to fill space of legitimate R matrices
+  # is clearly larger than the random data ball of points
+  # hard to tell more details
+points3d(bc.tri[1,],
+       bc.tri[2,],
+       bc.tri[3,],
+       col="dodgerblue", alpha = .6, size = 5,
+       xlim=c(-1,1), ylim=c(-1,1), zlim=c(-1,1),
+       xlab="rXY", ylab="rXZ", zlab="rYZ")
+
+
+
+```
+
+# 5. Niels Waller dichotomized data from uniformly sampled random R
+```{r}
+
+# 5a. data generation code from Niels Waller  ####
+# bug fix and minor updates by JND
+
+# first gets uniformly sampled R matrices, same as step 4
+# then generates binary data from them
+
+# Generate data from the space of legitimate correlation matrices 
+gen_NW_data <- function(nVar){
+  # This code was suggested by Niels Waller ####
+  # and updated by Joseph DeWeese
+  # to generate random R matrices from the space of legitimate R matrices
+  # and then generate random binary data from a randomally sampled R matrix
+  # from the space of all possible nVar x nVar R matrices
+  
+  # We wish to generate uniformly sampled R matrices (note that the onion method does
+  # not generate uniform random matrices)
+  nSubj <- 10000
+  # JND: specify as function argument instead 
+  # nVar <- 3
+  
+  # Generate random R matrix
+  R <- clusterGeneration::genPositiveDefMat(
+    dim = nVar, 
+    covMethod = "unifcorrmat", 
+    alphad = 1,# alpha = 1 for uniform sampling
+    rangeVar = c(1,1)
+  )$Sigma
+  
+  # Generate random data from above R matrix
+  
+  X <- MASS::mvrnorm(n = nSubj, 
+                     mu = rep(0,nVar), 
+                     Sigma = R, 
+                     empirical = TRUE)  # data will reproduce R exactly
+  
+  # sample random classical item difficulties
+  p <- runif(nVar, 0, 1)
+  # convert into thresholds
+  q <- qnorm(p)
+  
+  Xbinary <- matrix(0, nrow = nSubj, ncol = nVar )
+  for(i in 1:nVar){
+    # JND: bug fix -- updated X[, 1] to X[,i]
+    Xbinary[X[,i] <= q[i], i] <- 1
+  }
+  
+  # Xbinary contains random binary data from a randomally sampled R matrix
+  # from the space of all possible nVar x nVar R matrices
+  return(Xbinary)
+}
+
+
+# 5b. generate a bunch of correlation matrices ####
+
+# generate raw data
+nw.dat <- replicate(reps, gen_NW_data(3), simplify = FALSE) 
+
+# get tetrachoric correlations
+# note: some items have 0 variance, which produces an error
+nw.cors <- lapply(nw.dat, function(x) try(fungible::tetcor(x, PRINT = FALSE)$r))
+# subset to only cases without errors 
+valid.index <- sapply(nw.cors, is.numeric) # 
+nw.cors <- nw.cors[valid.index]
+
+# extract values in upper triangle, store in a matrix
+nw.tri <- sapply(nw.cors, function(x) x[upper.tri(x)])
+
+# add to plot 
+# appears to be similar to the B&C data
+points3d(nw.tri[1,],
+       nw.tri[2,],
+       nw.tri[3,],
+       col="orange4", alpha = .6, size = 5,
+       xlim=c(-1,1), ylim=c(-1,1), zlim=c(-1,1),
+       xlab="rXY", ylab="rXZ", zlab="rYZ")
+
+```
+
+# Further exploration of differences between 4) and 5)
+```{r}
+
+# random data R ####
+ran.cors <- replicate(reps, fungible::corSample(R = diag(3), n = 1000)$cor.sample,
+                  simplify = FALSE)
+ran.tri <- sapply(ran.cors, function(x) x[upper.tri(x)])
+
+
+# distributions of correlation values
+# both B&C and NW tetrachoric correlations are similar to those of unif random R
+# but NW is perhaps more similar, B&C is a bit more peaked
+plot(density(as.numeric(unif.tri)), col = "black", ylim = c(0, .7),
+     main = "Distributions of B&C vs. NW tetrachoric correlations are both
+     similar but not same as that of uniformly sampled R")
+lines(density(as.numeric(bc.tri)), col = "dodgerblue")
+lines(density(as.numeric(nw.tri)), col = "orange3")
+lines(density(as.numeric(ran.tri)), lty =2)
+legend("topright", legend=c("B&C tetrachoric correlations", 
+                          "NW tetrachoric correlations",
+                          "uniform R matrix correlations",
+                          "random noise R correlations"),
+       col=c("dodgerblue", "orange3", "black", "black"), lty=c(1,1,1,2), cex=.8)
+
+
+# can do kolmogorov-smirnov tests, but the sample size is really large
+# all reject
+# ks.test(as.numeric(unif.tri), as.numeric(bc.tri))
+# ks.test(as.numeric(unif.tri), as.numeric(nw.tri))
+# ks.test(as.numeric(nw.tri), as.numeric(bc.tri))
+
+
+# distribution of item means 
+bc.means <- sapply(bc.dat, colMeans)
+nw.means <- sapply(nw.dat, colMeans)
+
+plot(density(as.numeric(bc.means)), col = "dodgerblue",
+     main = "B&C item means vary around .5, while NW are uniform(0,1)")
+lines(density(as.numeric(nw.means)), col = "orange3")
+legend("topright", legend=c("B&C item means", 
+                          "NW item means"),
+       col=c("dodgerblue", "orange3"), lty=c(1,1), cex=.8)
+
+# distribution of 1st eigenvalue
+bc.evals <- sapply(bc.cors, function(x) eigen(x)$values)
+nw.evals <- sapply(nw.cors, function(x) eigen(x)$values)
+unif.evals <- sapply(unif.cors, function(x) eigen(x)$values)
+ran.evals <- sapply(ran.cors, function(x) eigen(x)$values)
+
+plot(density(unif.evals[1,]), col = "black", ylim = c(0,1.5),
+     main = "Dist of B&C data 1st eigenvalue seems slightly to the left")
+lines(density(bc.evals[1,]), col = "dodgerblue")
+lines(density(nw.evals[1,]), col = "orange3")
+lines(density(ran.evals[1,]), lty =2)
+legend("topright", legend=c("B&C 1st eigenvalue", 
+                            "NW 1st eigenvalue",
+                            "uniform R matrix 1st eigenvalue",
+                            "random noise 1st eigenvalue"),
+       col=c("dodgerblue", "orange3", "black", "black"), lty=c(1,1,1,2), cex=.8)
+
+
+
+
+```
+
+# compare with 7 items (which is what B&C used)
+```{r}
+
+# random data R ####
+ran.cors7 <- replicate(reps, fungible::corSample(R = diag(7), n = 1000)$cor.sample,
+                  simplify = FALSE)
+ran.tri7 <- sapply(ran.cors7, function(x) x[upper.tri(x)])
+
+# uniformly sampled R ####
+unif.cors7 <- replicate(reps, gen_ranR(7), simplify = FALSE)
+
+# extract values in upper triangle, store in a matrix
+unif.tri7 <- sapply(unif.cors, function(x) x[upper.tri(x)])
+
+# B&C ####
+# generate raw data
+bc.dat7 <- replicate(reps, gen_BC_data(7), simplify = FALSE) 
+
+# get tetrachoric correlations
+bc.cors7 <- lapply(bc.dat7, function(x) fungible::tetcor(x, PRINT = FALSE)$r)
+
+# extract values in upper triangle, store in a matrix
+bc.tri7 <- sapply(bc.cors7, function(x) x[upper.tri(x)])
+
+# NW ####
+# generate raw data
+nw.dat7 <- replicate(reps, gen_NW_data(7), simplify = FALSE) 
+
+# get tetrachoric correlations
+# note: some items have 0 variance, which produces an error
+nw.cors7 <- lapply(nw.dat7, function(x) try(fungible::tetcor(x, PRINT = FALSE)$r))
+# subset to only cases without errors 
+valid.index <- sapply(nw.cors7, is.numeric) 
+nw.cors7 <- nw.cors7[valid.index]
+
+# extract values in upper triangle, store in a matrix
+nw.tri7 <- sapply(nw.cors7, function(x) x[upper.tri(x)])
+
+# plots ####
+# distributions of correlation values
+# now B&C is very peaked, NW is somewhat peaked compared to uniformly sampled R
+plot(density(as.numeric(unif.tri7)), col = "black", ylim = c(0,3),
+     main = "7 items: B&C is very peaked, NW is somewhat peaked 
+     compared to uniformly sampled R")
+lines(density(as.numeric(bc.tri7)), col = "dodgerblue")
+lines(density(as.numeric(nw.tri7)), col = "orange3")
+lines(density(as.numeric(ran.tri7)), lty =2)
+legend("topright", legend=c("B&C tetrachoric correlations", 
+                          "NW tetrachoric correlations",
+                          "uniform R matrix correlations",
+                          "random noise R correlations"),
+       col=c("dodgerblue", "orange3", "black", "black"), lty=c(1,1,1,2), cex=.8)
+
+
+
+# distribution of item means 
+bc.means <- sapply(bc.dat7, colMeans)
+nw.means <- sapply(nw.dat7, colMeans)
+
+plot(density(as.numeric(bc.means)), col = "dodgerblue", xlim = c(0,1),
+     main = "B&C item means vary around .5, while NW are uniform(0,1)")
+lines(density(as.numeric(nw.means)), col = "orange3")
+legend("topright", legend=c("B&C item means", 
+                          "NW item means"),
+       col=c("dodgerblue", "orange3"), lty=c(1,1), cex=.8)
+
+# distribution of 1st eigenvalue
+bc.evals <- sapply(bc.cors7, function(x) eigen(x)$values)
+nw.evals <- sapply(nw.cors7, function(x) eigen(x)$values)
+unif.evals <- sapply(unif.cors7, function(x) eigen(x)$values)
+ran.evals <- sapply(ran.cors7, function(x) eigen(x)$values)
+
+plot(density(unif.evals[1,]), col = "black", xlim = c(0, 4), ylim = c(0, 4),
+     main = "Dist of B&C data 1st eigenvalue is much further to the left,
+     NW data is pretty close to uniformly sampled R")
+lines(density(bc.evals[1,]), col = "dodgerblue")
+lines(density(nw.evals[1,]), col = "orange3")
+lines(density(ran.evals[1,]), lty =2)
+legend("topright", legend=c("B&C 1st eigenvalue", 
+                            "NW 1st eigenvalue",
+                            "uniform R matrix 1st eigenvalue",
+                            "random noise 1st eigenvalue"),
+       col=c("dodgerblue", "orange3", "black", "black"), lty=c(1,1,1,2), cex=.8)
+
+
+```
+
+
+
